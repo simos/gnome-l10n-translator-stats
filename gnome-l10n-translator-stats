@@ -20,14 +20,19 @@
 import dircache                 # dircache.listdir()
 import os                       # os.system(), os.remove(), os.path.gmtime(), os.getenv()
 import getopt                   # getopt.getopt()
-import shutil                   # shutil.rmtree()
+import shutil                   # shutil.rmtree(), shutil.copyfile()
 import sys                      # sys.argv, sys.exit()
 import urllib                   # urllib.urlretrieve()
 import ConfigParser             # ConfigParser()
 import TextColorPrint
 import GetKey                   # for GetKey.getch()
 import re                       # for re.match()
+import git                      # for git functionality
+import time                     # time.mktime()
+import subprocess               # for popen()
 from datetime import datetime   # datetime()
+import random                   # for random.random()
+import filecmp                  # for filecmp.cmp()
 
 import GNOMEI18nTarget
 
@@ -62,7 +67,13 @@ class GNOMEL10nTranslatorStats:
     filter_short = 'c:m:r:t:'
     filter_long = ['category=', 'module=', 'release=', 'transtype=']
 
+    # This is populated using lxml and the parsing of the l10n.gnome.org XML file.
     gnome_release_data = []
+
+    # Hash table that contains the contributor effort
+    # Key is git author name (such as 'Simos Xenitellis <simos@gnome.org>')
+    # Value is number of translated words
+    contributors = {}
 
     dir_vcs = ''
     file_START = 'START'
@@ -194,9 +205,11 @@ class GNOMEL10nTranslatorStats:
             if o in ('--repositories'):
                 self.dir_vcs = a
             if o in ('--startdate'):
-                self.startdate = a
+                temp_date = datetime(*time.strptime(a, "%Y/%m/%d")[0:5])
+                self.startdate = time.mktime(temp_date.timetuple())
             if o in ('--enddate'):
-                self.enddate = a
+                temp_date = datetime(*time.strptime(a, "%Y/%m/%d")[0:5])
+                self.enddate = time.mktime(temp_date.timetuple())
             if o in ('--git-verbose'):
                 self.opt_gitverbose = True
             if o in ('-h', '--help'):
@@ -208,6 +221,11 @@ class GNOMEL10nTranslatorStats:
 
         self.verify_filtering()
 
+        if self.enddate <= self.startdate:
+          temp_date = self.enddate
+          self.enddate = self.startdate
+          self.startdate = temp_date
+
         self.parse_gnome_release_data()
 
         # We add more repositories. You can specify single modules, or groups of modules from a release.
@@ -216,15 +234,20 @@ class GNOMEL10nTranslatorStats:
         print 'Release      :', self.highlight(self.release), '     retrieved release:', self.gnome_release_data['release']
         print 'Language     :', self.highlight(self.language), '             retrieved language:', self.gnome_release_data['language']
         print 'Repositories :', self.highlight(self.dir_vcs)
+        print 'Start date   :', self.highlight(datetime.fromtimestamp(self.startdate).ctime())
+        print 'End date     :', self.highlight(datetime.fromtimestamp(self.enddate).ctime())
+        print
         for cat in list(self.gnome_release_data['categories'].keys()):
             if self.category != '' and cat != self.category:
                 continue
-            print '    Category: %(cat)s' % { 'cat': self.highlighttitle(cat) }
+            if self.opt_verbose:
+                print '    Category: %(cat)s' % { 'cat': self.highlighttitle(cat) }
             for mod in self.gnome_release_data['categories'][cat]:
                 if self.module != '' and mod != self.module:
                     continue
-                print '        Module: %(br)35s, Branch: %(mod)s' % { 'br': self.highlightitem(mod), \
-                    'mod': self.highlightitem2(self.gnome_release_data['categories'][cat][mod]['branch']) }
+                if self.opt_verbose:
+                    print '        Module: %(br)35s, Branch: %(mod)s' % { 'br': self.highlightitem(mod), \
+                        'mod': self.highlightitem2(self.gnome_release_data['categories'][cat][mod]['branch']) }
                 for resource in self.gnome_release_data['categories'][cat][mod]['resource']:
                     if self.transtype:
                         if resource['id'] not in self.transtype:
@@ -239,27 +262,89 @@ class GNOMEL10nTranslatorStats:
                     vcspath = re.sub('\/browse\/', '/git/', vcspath)
                     branch = self.gnome_release_data['categories'][cat][mod]['branch']
                     resourceid = resource['id']
-                    
-                    print "Repository :", repository
-                    print "Branch     :", branch
-                    print "SubDir     :", subdir
-                    print "Resouce ID :", resourceid
-                    mypath = self.dir_vcs + repository + '/' + subdir
-                    print "My path:", mypath
-                    print "cd", mypath, ";", "git checkout master ; git branch -D l10n-stats ; git checkout", branch, "; git checkout -b l10n-stats"
+                    repositorypath = self.dir_vcs + repository
                     if resourceid == 'domain':
-                        if os.path.exists(mypath + '/el.po'):
-                            print "Found it!"
-                        else:
-                            print "Bummer domain"
+                        pofile = self.dir_vcs + repository + '/' + subdir + '/' + self.language + '.po'
                     elif resourceid == 'document':
-                        if os.path.exists(mypath + '/el/el.po'):
-                            print "Found it!"
-                        else:
-                            print "Bummer document"
+                        pofile = self.dir_vcs + repository + '/' + subdir + '/' + self.language + '/' + self.language + '.po'
                     else:
-                        print "Unknown resource id"
-                        sys.exit(-20)
+                      print "Invalid resource id", resourceid
+                      sys.exit(-20)
+                    
+                    if os.path.exists(repositorypath):
+                        print 'Analysing for', pofile
+                        self.analyse_contributions(repositorypath, pofile, branch)
+                        print
+
+
+    def analyse_contributions(self, repositorypath, pofile, branch):
+        args_checkout_master = ['/usr/bin/git', 'checkout', 'master']
+        args_checkout_branch = ['/usr/bin/git', 'checkout', '--track', 'origin/' + branch]
+        args_checkout_stats  = ['/usr/bin/git', 'checkout', '-b', 'l10n-stats']
+        args_delete_stats    = ['/usr/bin/git', 'branch', '-D', 'l10n-stats']
+        args_delete_branch   = ['/usr/bin/git', 'branch', '-D', branch]
+        args_remove_commit   = ['/usr/bin/git', 'reset', '--quiet', '--hard', 'HEAD^1']
+
+        subprocess.call(args_checkout_master, cwd = repositorypath)
+        subprocess.call(args_checkout_branch, cwd = repositorypath)
+        subprocess.call(args_checkout_stats, cwd = repositorypath)
+       
+        repo = git.Repo(repositorypath)
+        commits = repo.iter_commits('l10n-stats', max_count=10000)
+        latestpofile = '/tmp/gnome-l10n-translator-stats-latest-' + branch + str(random.random())
+        shutil.copyfile(pofile, latestpofile)
+
+        firsttime = True
+        inrange = False
+        outofrange = False
+        emptytranslation = False
+        for i in commits:
+            #print "[[[", i.committer, i.message, ']]]]'
+            if firsttime:
+              firsttime = False
+              previous_author = i.author
+              previous_authored_date = i.authored_date
+              previous_committer = i.committer
+              previous_committed_date = i.committed_date
+              previous_message = i.message
+
+            if outofrange:
+              next
+
+            if i.authored_date >= self.startdate and i.authored_date <= self.enddate:
+                if not inrange:
+                  inrange = True
+
+                try:
+                    if os.path.exists(pofile):
+                        subprocess.call(args_remove_commit, cwd = repositorypath)
+                        if not filecmp.cmp(latestpofile, pofile):
+                            print previous_committer, previous_message
+                            print self.highlightitem(str(i.committer)), self.highlight(i.message)
+                            shutil.copyfile(pofile, latestpofile)
+                            myrandomname = '/tmp/gnome.' + str(random.random())
+                            shutil.copyfile(pofile, myrandomname) 
+                            shutil.copystat(pofile, myrandomname)
+                except OSError, err:
+                  pass
+            elif inrange:
+              outofrange = True
+              inrange = False
+
+            previous_author = i.author
+            previous_authored_date = i.authored_date
+            previous_committer = i.committer
+            previous_committed_date = i.committed_date
+            previous_message = i.message
+        if inrange: 
+          # We would need to create a new iterator to do this right...
+          print "Internal error: need to increase max_count for", pofile, branch
+          sys.exit(-1)
+
+        os.unlink(latestpofile)
+        subprocess.call(args_checkout_master, cwd = repositorypath)
+        subprocess.call(args_delete_stats, cwd = repositorypath)
+        subprocess.call(args_delete_branch, cwd = repositorypath)
 
     def get_po_file_data(self, pofile):
         if not self.gnome_release_data:
@@ -343,7 +428,7 @@ class GNOMEL10nTranslatorStats:
           print "for URL", xmlurl
           print "and saving as", filename
         ### WE ARE CACHING WHILE TESTING. UNCOMMENT BELOW BEFORE RELEASE
-        self.download_file(xmlurl, filepath)
+        #self.download_file(xmlurl, filepath)
 
         # An error page is about 2.5KB, a proper XML file is circa 50KB.
         if os.path.getsize(filepath) < 5000:
@@ -383,8 +468,8 @@ class GNOMEL10nTranslatorStats:
 
         help_stats = self.highlight('stats') + self.highlighttitle('      Produce translation stats') + """
 \t\t--language LANG     specify the language code per ISO 639
-\t\t--startdate DATE    specify the start date
-\t\t--enddate DATE      specify the end date
+\t\t--startdate DATE    specify the start date (such as '2010/01/31')
+\t\t--enddate DATE      specify the end date (such as '2010/06/30')
 \t\t--release REL       specify GNOME release (such as 'gnome-2-26')
 \t\t--repositories DIR  specify the directory with the GNOME VCS repositories
 """
