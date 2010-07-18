@@ -26,9 +26,8 @@ import urllib                   # urllib.urlretrieve()
 import ConfigParser             # ConfigParser()
 import TextColorPrint
 import GetKey                   # for GetKey.getch()
+import re                       # for re.match()
 from datetime import datetime   # datetime()
-
-from xdg.BaseDirectory import * # XDG Python support, ...
 
 import GNOMEI18nTarget
 
@@ -40,7 +39,7 @@ except ImportError as err:
     print 'Please install the package python-lxml and try again.\nExiting...'
     sys.exit(-10)
 
-PROGNAME='gnome-i18n-manage-vcs'
+PROGNAME='gnome-l10n-translator-stats'
 
 PACKAGE_NAME    = 'GNOME L10n Translator Stats'
 PACKAGE_VERSION = '0.1'
@@ -50,19 +49,18 @@ PACKAGE_COPYRIGHT = 'Copyright 2010 Simos Xenitellis'
 class GNOMEL10nTranslatorStats:
     # Required configuration options
     language = ''
+    release = ''
 
     # Options used for filtering
-    all = False
     category = ''
     module = ''
-    release = ''
     transtype = ''              # either 'doc' or 'ui' (for 'document' or 'domain' in XML)
 
     common_short = 'dhv'
     common_long = ['dry-run', 'help', 'verbose']
 
     filter_short = 'c:m:r:t:'
-    filter_long = ['all', 'category=', 'module=', 'release=', 'transtype=']
+    filter_long = ['category=', 'module=', 'release=', 'transtype=']
 
     gnome_release_data = []
 
@@ -74,22 +72,14 @@ class GNOMEL10nTranslatorStats:
     # Text color object
     tc = ''
 
-    action_config = False
     action_stats = False
+    action_cleanup = False
 
-    opt_commit = False
-    opt_clone = False
     opt_dryrun = False
-    opt_eponymous = False
-    opt_init = False
-    opt_cleanall = False
     opt_gitverbose = False
     opt_gitquiet = False
-    opt_nocheckout = False
-    opt_trim = False
     opt_verbose = False
-    opt_vcsreset = False
-    opt_vcsupdate = False
+    opt_cleanup = False
 
     def __init__(self, argv):
         # Initialise the text color object
@@ -103,46 +93,24 @@ class GNOMEL10nTranslatorStats:
             self.usage(['intro', 'help'])
             sys.exit(0)
 
-        # Establish where the configuration file should be stored as per the
-        # XDG directories recommendation by the Freedesktop organization.
-        self.conf_dir = os.path.join(xdg_config_home, PROGNAME)
-        # Create the directory if it doesn't exist
-        if not os.path.isdir(self.conf_dir):
-            os.mkdir(self.conf_dir)
-
-        self.data_dir = os.path.join(xdg_data_home, PROGNAME)
-        # Create the directory if it doesn't exist
-        if not os.path.isdir(self.data_dir):
-            os.mkdir(self.data_dir)
-
-        # Set the configuration filename and path.
-        self.conf_file = os.path.join(self.conf_dir, '%s.conf' % PROGNAME)
-
         # Identify the action selected.
-        if argv[1] == 'config':
-                self.action_config = True
-        elif argv[1] == 'stats':
+        if argv[1] == 'stats':
                 self.action_stats = True
+        elif argv[1] == 'cleanup':
+                self.action_cleanup = True
         else:
-            self.usage(['intro', 'stats',
+            self.usage(['intro', 'cleanup', 'stats',
                         'filtering', 'common'])
             sys.exit(0)
-
-        # Perform the 'config' action.
-        if self.action_config:
-            self.process_config(argv[2:])
-            sys.exit(0)
-
-        # Read the configuration file.
-        self.readconfig()
 
         # Perform the subsequence actions.
         if self.action_stats:
             self.process_stats(argv[2:])
+        elif self.action_cleanup:
+            self.process_cleanup(argv[2:])
 
         # Execution ends.
         print 'Action has just completed.'
-        sys.exit(0)
 
     def highlight(self, str):
         ''' Returns a string with ANSI codes that print as color on the terminal window. '''
@@ -152,223 +120,151 @@ class GNOMEL10nTranslatorStats:
         ''' Returns a string with ANSI codes that print as color on the terminal window. '''
         return self.tc.cprint(str, 'green')
 
+    def highlightitem2(self, str):
+        ''' Returns a string with ANSI codes that print as color on the terminal window. '''
+        return self.tc.cprint(str, 'green_highlight')
+
     def highlighttitle(self, str):
         ''' Returns a string with ANSI codes that print as color on the terminal window. '''
         return self.tc.cprint(str, 'blue')
 
-    def process_config(self, cmdargs):
-        ''' Process the 'config' action. '''
-        # If no arguments, show 'config' specific help.
+    def process_cleanup(self, cmdargs):
         if not cmdargs:
-            self.usage(['intro', 'config'])
-            sys.exit(0)
-
-        # Build command line argument filter.
-        try:
-            this_filter = [ 'language=' ];
-            this_filter.extend(self.common_long)
-            opts, args = getopt.getopt(cmdargs, 'l' + self.common_short, this_filter)
-        except getopt.GetoptError as err:
-            print 'Error: %s' % str(err)
-            self.usage(['intro' ])
-            sys.exit(0)
-
-        # Retrieve parament values.
-        listconfig = False
-        for o, a in opts:
-            if o in ('-h', '--help'):
-                self.usage(['intro', 'stats',
-                            'filtering', 'common'])
-                sys.exit()
-            if o in ('--language'):
-                self.language = a
-            if o in ('-l'):
-                listconfig = True
-
-        # Perform '-l' (list) option.
-        if not os.path.exists(self.conf_dir):
-            print 'Could not find a configuration file: %s' % self.conf_dir
-            print 'Creating new configuration file...'
-        elif listconfig:
-            self.readconfig()
-            print 'Configuration file (%s)' % self.highlight(self.conf_dir)
-            print
-            print 'Language code      =', self.highlight(self.language)
-            sys.exit(0)
-
-        # Print diagnostics that one of the tuple is not defined.
-        if self.language == '':
-            print 'Error: Required parameter(s) missing for configuration'
-            print 'When using the "config" action for the first time, please specify all of the'
-            print 'following.'
-            print ' 1. --language LANG, language (ISO 639), i.e. en_GB, el, fr, es'
-            print
-            print 'Received: language =', self.language
-            print
-            print 'Use --help for  more help.'
-            print 'Exiting...'
-            sys.exit(-1)
-
-        # Make sure we have directories for po and vcs files.
-        self.createreleasedirectory(self.release)
-
-        # Show diagnostics for created directories.
-        for dir in [self.dir_vcs]:
-            if not os.path.exists(dir):
-                print 'Directory', dir, 'does not exist.'
-                print 'Please create it and try again.'
-                print 'Exiting...'
-                sys.exit(-1)
-
-    def process_stats(self, cmdargs):
-        self.show_stats(cmdargs)
-
-    def process_vcsmanage(self, cmdargs):
-        self.dir_vcs = self.get_release_config(self.release)
-        if not cmdargs:
-            self.usage(['intro', 'vcsmanage', 'filtering', 'common'])
+            self.usage(['intro', 'cleanup', 'filtering', 'common'])
             sys.exit(0)
 
         try:
                 this_filter_short = self.common_short + self.filter_short
-                this_filter_long = ['cleanall',
-                'commit', 'clone', 'eponymous',
-                'no-checkout',
-                'reset', 'git-quiet', 'git-verbose', 'trim',
-                'update-vcs', 'updatevcs',
-                'vcsupdate', 'vcs-update'];
+                this_filter_long = ['release=', 'git-verbose', 'repositories='];
                 this_filter_long.extend(self.common_long)
                 this_filter_long.extend(self.filter_long)
                 opts, args = getopt.getopt(cmdargs, this_filter_short, this_filter_long)
         except getopt.GetoptError as err:
             print 'Error', err
-            self.usage(['intro', 'vcsmanage', 'filtering', 'common'])
+            self.usage(['intro', 'cleanup', 'filtering', 'common'])
             sys.exit(0)
         for o, a in opts:
-            if o in ('--cleanall'):
-                self.opt_cleanall = True
-            if o in ('--clone'):
-                self.opt_clone = True
             if o in ('--dryrun', '--dry-run'):
                 self.opt_dryrun = True
-            if o in ('--eponymous'):
-                self.opt_eponymous = True
-            if o in ('--git-quiet'):
-                self.opt_gitquiet = True
+            if o in ('--release'):
+                self.release = a
+            if o in ('--repositories'):
+                self.dir_vcs = a
             if o in ('--git-verbose'):
                 self.opt_gitverbose = True
             if o in ('-h', '--help'):
-                self.usage(['intro', 'vcsmanage', 'filtering', 'common'])
+                self.usage(['intro', 'cleanup', 'filtering', 'common'])
                 sys.exit()
-            if o in ('--no-checkout'):
-                self.opt_nocheckout = True
-            if o in ('--reset'):
-                self.opt_vcsreset = True
-            if o in ('--trim'):
-                self.opt_trim = True
             if o in ('-v', '--verbose'):
                 self.opt_verbose = True
-            if o in ('--update-vcs', '--updatevcs', '--vcs-update', '--vcsupdate'):
-                self.opt_vcsupdate = True
+            self.apply_filtering(o, a)
+
+        # Language is not required for cleanup; we select one so that we can grab the XML package list
+        self.language = 'el'
+        self.parse_gnome_release_data()
+        if self.release != 'master':
+            CMD_REMOVE_STAT_BRANCHES = 'git checkout master ; git branch -D l10n-stats ; git branch -D ' + self.release + "; git reset --hard origin/master"
+        else:
+            CMD_REMOVE_STAT_BRANCHES = 'git checkout master ; git branch -D l10n-stats'
+        self.perform_on_repositories(CMD_REMOVE_STAT_BRANCHES, 'Removing branches related to translation statistics')
+        # CMD = 'git checkout master ; git branch -D l10n-stats ; git checkout gnome-2-26 ; git checkout -b l10n-stats'
+
+    def process_stats(self, cmdargs):
+        if not cmdargs:
+            self.usage(['intro', 'stats', 'filtering', 'common'])
+            sys.exit(0)
+
+        try:
+                this_filter_short = self.common_short + self.filter_short
+                this_filter_long = ['language=', 'release=', 'git-verbose', 'startdate=', 'enddate=', 'repositories='];
+                this_filter_long.extend(self.common_long)
+                this_filter_long.extend(self.filter_long)
+                opts, args = getopt.getopt(cmdargs, this_filter_short, this_filter_long)
+        except getopt.GetoptError as err:
+            print 'Error', err
+            self.usage(['intro', 'stats', 'filtering', 'common'])
+            sys.exit(0)
+        for o, a in opts:
+            if o in ('--dryrun', '--dry-run'):
+                self.opt_dryrun = True
+            if o in ('--language'):
+                self.language = a
+            if o in ('--release'):
+                self.release = a
+            if o in ('--repositories'):
+                self.dir_vcs = a
+            if o in ('--startdate'):
+                self.startdate = a
+            if o in ('--enddate'):
+                self.enddate = a
+            if o in ('--git-verbose'):
+                self.opt_gitverbose = True
+            if o in ('-h', '--help'):
+                self.usage(['intro', 'stats', 'filtering', 'common'])
+                sys.exit()
+            if o in ('-v', '--verbose'):
+                self.opt_verbose = True
             self.apply_filtering(o, a)
 
         self.verify_filtering()
 
-        if self.opt_vcsreset:
-            # Perform hard reset on repositories
-            self.perform_on_repositories('git reset --hard origin/master', 'Performing hard reset on')
-        elif self.opt_cleanall:
-            # Remove all repositories
-            self.perform_on_repositories(shutil.rmtree, 'Removing repositories')
-        elif self.opt_eponymous:
-            # Convert clones to eponymous ones. Sets the username to self.username.
-            cmd_remote_url_partial = 'git config remote.origin.url ssh://' + self.username+ '@git.gnome.org/git/'
-            self.perform_on_repositories(cmd_remote_url_partial, 'Converting repository to eponymous', append_name = True)
-        elif self.opt_trim:
-            # Erase the working copy of each repository.
-            cmd_erase_working_copy = 'rm -fr ' + self.dir_vcs
-            self.perform_on_repositories(cmd_erase_working_copy, 'Erasing working copy for', append_nameslashstar = True)
-        elif self.opt_vcsupdate:
-            # Perform 'git pull --rebase' for each repository.
-            cmd_pull = 'git pull --rebase'
-            self.perform_on_repositories(cmd_pull, 'Performing a git pull --rebase in')
+        self.parse_gnome_release_data()
 
-        if self.opt_clone:
-            # We add more repositories. You can specify single modules, or groups of modules from a release.
-            if self.module:
-                self.clone_module(self.module, self.username)
-            elif self.release:
-                print "Cloning release", self.highlight(self.release), "category:", self.highlightitem(self.category)
-                self.parse_gnome_release_data()
-            else:
-                print "You need to specify a release"
-            release = self.gnome_release_data['release']
-            language = self.gnome_release_data['language']
-            self.dir_po, self.dir_vcs = self.get_release_config(self.release)
-            print 'Language :', self.language
-            print 'Directories:', self.dir_po, self.dir_vcs
-            for cat in list(self.gnome_release_data['categories'].keys()):
-                if self.category != '' and cat != self.category:
+        # We add more repositories. You can specify single modules, or groups of modules from a release.
+        release = self.gnome_release_data['release']
+        language = self.gnome_release_data['language']
+        print 'Release      :', self.highlight(self.release), '     retrieved release:', self.gnome_release_data['release']
+        print 'Language     :', self.highlight(self.language), '             retrieved language:', self.gnome_release_data['language']
+        print 'Repositories :', self.highlight(self.dir_vcs)
+        for cat in list(self.gnome_release_data['categories'].keys()):
+            if self.category != '' and cat != self.category:
+                continue
+            print '    Category: %(cat)s' % { 'cat': self.highlighttitle(cat) }
+            for mod in self.gnome_release_data['categories'][cat]:
+                if self.module != '' and mod != self.module:
                     continue
-                print '    Category: %(cat)s' % { 'cat': cat }
-                for mod in self.gnome_release_data['categories'][cat]:
-                    if self.module != '' and mod != self.module:
-                        continue
-                    print '        Module: %(br)22s, Branch: %(mod)s' % { 'br': mod, \
-                        'mod': self.gnome_release_data['categories'][cat][mod]['branch'] }
-                    for resource in self.gnome_release_data['categories'][cat][mod]['resource']:
-                        if self.transtype:
-                            if resource['id'] not in self.transtype:
-                                continue
-                        if self.opt_verbose:
-                            print '        ID:', resource['id'], 'Type:', resource['type']
-                            print '          POFile:', resource['pofile']
-                            print '          VCSPath:', resource['vcspath']
-                        if self.username == 'anonymous':
-                            vcspath = 'git://git.gnome.org/' + mod
+                print '        Module: %(br)35s, Branch: %(mod)s' % { 'br': self.highlightitem(mod), \
+                    'mod': self.highlightitem2(self.gnome_release_data['categories'][cat][mod]['branch']) }
+                for resource in self.gnome_release_data['categories'][cat][mod]['resource']:
+                    if self.transtype:
+                        if resource['id'] not in self.transtype:
+                            continue
+                    if self.opt_verbose:
+                        print '        ID:', resource['id'], 'Type:', resource['type']
+                        print '          VCSPath:', resource['vcspath']
+                    repository = mod
+                    location = re.split('\/browse\/', resource['vcspath'])[1]
+                    subdir = re.split('\/', location, maxsplit=1)[1]
+                    vcspath = re.sub('^http', 'git', resource['vcspath'])
+                    vcspath = re.sub('\/browse\/', '/git/', vcspath)
+                    branch = self.gnome_release_data['categories'][cat][mod]['branch']
+                    resourceid = resource['id']
+                    
+                    print "Repository :", repository
+                    print "Branch     :", branch
+                    print "SubDir     :", subdir
+                    print "Resouce ID :", resourceid
+                    mypath = self.dir_vcs + repository + '/' + subdir
+                    print "My path:", mypath
+                    print "cd", mypath, ";", "git checkout master ; git branch -D l10n-stats ; git checkout", branch, "; git checkout -b l10n-stats"
+                    if resourceid == 'domain':
+                        if os.path.exists(mypath + '/el.po'):
+                            print "Found it!"
                         else:
-                            vcspath = 'ssh://' + self.username + '@' + 'git.gnome.org/git/' + mod
-                        branch = self.gnome_release_data['categories'][cat][mod]['branch']
-
-                        CMD1 = 'cd ' + self.dir_vcs + ';'
-                        if self.opt_gitquiet:
-                            if self.opt_nocheckout:
-                                CMD1 = CMD1 + 'git clone --no-checkout --quiet ' + vcspath
-                            else:
-                                CMD1 = CMD1 + 'git clone --quiet ' + vcspath
+                            print "Bummer domain"
+                    elif resourceid == 'document':
+                        if os.path.exists(mypath + '/el/el.po'):
+                            print "Found it!"
                         else:
-                            if self.opt_nocheckout:
-                                CMD1 = CMD1 + 'git clone --no-checkout ' + vcspath
-                            else:
-                                CMD1 = CMD1 + 'git clone ' + vcspath
-
-                        if self.opt_dryrun and self.opt_verbose:
-                            print '            CMD:', CMD1
-                        elif not self.opt_dryrun:
-                            if os.path.exists(self.dir_vcs + mod):
-                                #print 'Cached repository for', mod, 'exists. Skipping cloning...'
-                                pass
-                            else:
-                                print 'Retrieving module', mod, '...'
-                                if self.opt_verbose:
-                                    print
-                                    sys.stdout.flush()
-                                os.system(CMD1)
-                                if not self.opt_verbose:
-                                    sys.stdout.write(' ' * 80 + '\r')
-                                    sys.stdout.flush()
-            if not self.opt_verbose:
-                print ' ' * 80
-                pass
+                            print "Bummer document"
+                    else:
+                        print "Unknown resource id"
+                        sys.exit(-20)
 
     def get_po_file_data(self, pofile):
         if not self.gnome_release_data:
             self.parse_gnome_release_data()
 
-        if self.gnome_release_data['release'] != self.release:
-            print 'Mismatched release data', self.release, self.gnome_release_data['release']
-        if self.gnome_release_data['language'] != self.language:
-            print 'Mismatched language data', self.language, self.gnome_release_data['language']
         for cat in list(self.gnome_release_data['categories'].keys()):
             if self.category != '' and cat != self.category:
                 continue
@@ -442,6 +338,11 @@ class GNOMEL10nTranslatorStats:
         filename = 'managevcs-%s-%s.xml' % (self.language, self.release)
         filepath = os.path.join(os.curdir, filename)
         xmlurl = 'http://l10n.gnome.org/languages/' + self.language + '/' + self.release + '/xml'
+        if self.opt_verbose: 
+          print "Retrieving for language", self.language, "and release", self.release
+          print "for URL", xmlurl
+          print "and saving as", filename
+        ### WE ARE CACHING WHILE TESTING. UNCOMMENT BELOW BEFORE RELEASE
         self.download_file(xmlurl, filepath)
 
         # An error page is about 2.5KB, a proper XML file is circa 50KB.
@@ -451,9 +352,13 @@ class GNOMEL10nTranslatorStats:
             os.remove(filepath)
             sys.exit(-7)
 
-	if (self.opt_verbose):
-		print 'Retrieved GNOME release data for', self.release, xmlurl
+        if self.opt_verbose:
+            print 'Retrieved GNOME release data for', self.release, xmlurl
+
         self.gnome_release_data = self.parse_gnome_xml_file(filepath)
+
+        if self.opt_verbose:
+            print "Done parsing gnome release data"
 
     def parse_gnome_xml_file(self, filename):
         try:
@@ -484,8 +389,12 @@ class GNOMEL10nTranslatorStats:
 \t\t--repositories DIR  specify the directory with the GNOME VCS repositories
 """
 
-        help_filtering = self.highlighttitle('Module filtering  (applies to vcsmanage, poget, commit)') + """
-\t        --all               apply action to all locally available repositories
+        help_cleanup = self.highlight('cleanup') + self.highlighttitle('      Cleanup repositories of stat branches') + """
+\t\t--release REL       specify GNOME release (such as 'gnome-2-26')
+\t\t--repositories DIR  specify the directory with the GNOME VCS repositories
+"""
+
+        help_filtering = self.highlighttitle('Module filtering (optional)') + """
 \t-c CAT  --category CAT      i18n category name CAT (such as 'desktop')
 \t-m MODU --module MOD        i18n module name MOD (such as 'gnome-games')
 \t-t TYPE --transtype TYPE    optionally specify translation type, either ui or doc
@@ -502,6 +411,7 @@ class GNOMEL10nTranslatorStats:
         help_messages = {
             'intro': help_intro,
             'stats': help_stats,
+            'cleanup': help_cleanup,
             'filtering': help_filtering,
             'common': help_common,
             'help': help_help
@@ -548,67 +458,11 @@ class GNOMEL10nTranslatorStats:
         if self.opt_verbose:
             print ' done.'
 
-    def writeconfig(self):
-        config = ConfigParser.ConfigParser()
-
-        try:
-            config.add_section('GNOME-I18n-Manage-VCS')
-            if self.language:
-                config.set('GNOME-I18n-Manage-VCS', 'language', self.language)
-            #self.dir_vcs = os.path.join(self.data_dir, self.release, 'vcs/')
-            #config.set('GNOME-I18n-Manage-VCS', 'vcsdir', self.dir_vcs)
-            #self.dir_po = os.path.join(self.data_dir, self.release, 'po/')
-            #config.set('GNOME-I18n-Manage-VCS', 'podir', self.dir_po)
-        except ConfigParser.NoOptionError as err:
-            print 'Error:', err
-            sys.exit(10)
-
-        try:
-            cf = open(self.conf_file, 'wb')
-            config.write(cf)
-            cf.close()
-        except Exception as e:
-            print 'Oooops'
-
-    def readconfig(self):
-        """
-        Reads the existing configuration file.
-        """
-        config = ConfigParser.ConfigParser()
-
-        if os.path.exists(self.conf_file):
-            config.read(self.conf_file)
-
-            try:
-                self.language = config.get('GNOME-I18n-Manage-VCS', 'language')
-                #self.dir_po = os.path.join(self.data_dir, self.release, 'po/')
-                #self.dir_vcs = os.path.join(self.data_dir, self.release, 'vcs/')
-            except ConfigParser.NoOptionError as err:
-                if not self.action_config:
-                    print 'Error:', str(err)
-                    print 'Please use --config and the relevant argument to set the missing setting'
-                    print 'Exiting...'
-                    sys.exit(10)
-        #else:
-        #    print "The configuration file %s was not found." % self.conf_file
-        #    print "It is required to perform the initial configuration, before issuing commands."
-        #    sys.exit(10)
-
-    def get_release_config(self, release):
-        dir_po = os.path.join(self.data_dir, 'po/')
-        dir_vcs = os.path.join(self.data_dir, 'vcs/')
-
-        return dir_po, dir_vcs
-
     def apply_filtering(self, o, a):
-        if o in ('--all'):
-            self.all = True
         if o in ('-c', '--category'):
             self.category = a
         if o in ('-m', '--module'):
             self.module = a
-        if o in ('-r', '--release'):
-            self.release = a
         if o in ('--transtype'):
             if a in ['ui', 'domain']:
                 self.transtype = 'domain'
@@ -619,10 +473,14 @@ class GNOMEL10nTranslatorStats:
                 sys.exit(-4)
 
     def verify_filtering(self):
-        if self.all == False and self.category == '' and self.module == '' and self.release == '' and self.transtype == '':
-            if not self.opt_cleanall:
-                print 'Error: It is required to specify at least one of release, category, module or translation type, or specify all.'
-                sys.exit(8)
+        if self.category == '' or self.module == '' or self.transtype == '':
+          if self.opt_verbose:
+            if self.category:
+                print "Filtering on category:", self.category
+            if self.module:
+                print "Filtering on module:", self.module
+            if self.transtype:
+                print "Filtering on translation type: ", self.transtype
 
 if __name__ == '__main__':
     start = GNOMEL10nTranslatorStats(sys.argv)
