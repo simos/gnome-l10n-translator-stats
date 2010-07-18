@@ -33,6 +33,7 @@ import subprocess               # for popen()
 from datetime import datetime   # datetime()
 import random                   # for random.random()
 import filecmp                  # for filecmp.cmp()
+import hashlib                  # for md5
 
 import GNOMEI18nTarget
 
@@ -278,6 +279,9 @@ class GNOMEL10nTranslatorStats:
 
 
     def analyse_contributions(self, repositorypath, pofile, branch):
+        if not os.path.exists(pofile):
+            return
+
         args_checkout_master = ['/usr/bin/git', 'checkout', 'master']
         args_checkout_branch = ['/usr/bin/git', 'checkout', '--track', 'origin/' + branch]
         args_checkout_stats  = ['/usr/bin/git', 'checkout', '-b', 'l10n-stats']
@@ -291,24 +295,26 @@ class GNOMEL10nTranslatorStats:
        
         repo = git.Repo(repositorypath)
         commits = repo.iter_commits('l10n-stats', max_count=10000)
-        latestpofile = '/tmp/gnome-l10n-translator-stats-latest-' + branch + str(random.random())
-        shutil.copyfile(pofile, latestpofile)
+        previouspofile = '/tmp/gnome-l10n-translator-stats-latest-' + branch + str(random.random())
+        shutil.copyfile(pofile, previouspofile)
 
         firsttime = True
         inrange = False
         outofrange = False
         emptytranslation = False
+
         for i in commits:
-            #print "[[[", i.committer, i.message, ']]]]'
             if firsttime:
               firsttime = False
+
               previous_author = i.author
               previous_authored_date = i.authored_date
               previous_committer = i.committer
               previous_committed_date = i.committed_date
               previous_message = i.message
+              previous_hash = self.file_md5(pofile)
 
-            if outofrange:
+            if outofrange or emptytranslation:
               next
 
             if i.authored_date >= self.startdate and i.authored_date <= self.enddate:
@@ -317,31 +323,35 @@ class GNOMEL10nTranslatorStats:
 
                 try:
                     if os.path.exists(pofile):
+                        if previous_hash != self.file_md5(pofile):
+                            print self.highlightitem(str(previous_author)), self.highlight(previous_message)
+
+                        shutil.copyfile(pofile, previouspofile)
                         subprocess.call(args_remove_commit, cwd = repositorypath)
-                        if not filecmp.cmp(latestpofile, pofile):
-                            print previous_committer, previous_message
-                            print self.highlightitem(str(i.committer)), self.highlight(i.message)
-                            shutil.copyfile(pofile, latestpofile)
-                            myrandomname = '/tmp/gnome.' + str(random.random())
-                            shutil.copyfile(pofile, myrandomname) 
-                            shutil.copystat(pofile, myrandomname)
+
+                        previous_author = i.author
+                        previous_authored_date = i.authored_date
+                        previous_committer = i.committer
+                        previous_committed_date = i.committed_date
+                        previous_message = i.message
+                        if os.path.exists(pofile):
+                            previous_hash = self.file_md5(pofile)
+                        else:
+                            print self.highlightitem(str(previous_author)), self.highlight(previous_message)
+                    else:
+                      emptytranslation = True
                 except OSError, err:
                   pass
             elif inrange:
               outofrange = True
               inrange = False
 
-            previous_author = i.author
-            previous_authored_date = i.authored_date
-            previous_committer = i.committer
-            previous_committed_date = i.committed_date
-            previous_message = i.message
         if inrange: 
           # We would need to create a new iterator to do this right...
           print "Internal error: need to increase max_count for", pofile, branch
           sys.exit(-1)
 
-        os.unlink(latestpofile)
+        os.unlink(previouspofile)
         subprocess.call(args_checkout_master, cwd = repositorypath)
         subprocess.call(args_delete_stats, cwd = repositorypath)
         subprocess.call(args_delete_branch, cwd = repositorypath)
@@ -566,6 +576,16 @@ class GNOMEL10nTranslatorStats:
                 print "Filtering on module:", self.module
             if self.transtype:
                 print "Filtering on translation type: ", self.transtype
+
+    def file_md5(self, filename, block_size=128):
+      f = open(str(filename), 'rb')
+      md5 = hashlib.md5()
+      while True:
+        data = f.read(block_size)
+        if not data:
+           break
+        md5.update(data)
+      return md5.digest()
 
 if __name__ == '__main__':
     start = GNOMEL10nTranslatorStats(sys.argv)
