@@ -499,8 +499,8 @@ class GNOMEL10nTranslatorStats:
           print "Retrieving for language", self.language, "and release", self.release
           print "for URL", xmlurl
           print "and saving as", filename
-        ### WE ARE CACHING WHILE TESTING. UNCOMMENT BELOW BEFORE RELEASE
-        #self.download_file(xmlurl, filepath)
+        if not os.path.exists(filepath):
+            self.download_file(xmlurl, filepath)
 
         # An error page is about 2.5KB, a proper XML file is circa 50KB.
         if os.path.getsize(filepath) < 5000:
