@@ -51,7 +51,6 @@ class GNOMEGitCommits:
         self.line = self.outputlines[0]
         self.uniline = unicode(self.line, errors='replace')
         self.m = self.patHash.match(self.uniline)
-        print "Not commiting hash, hash is", self.m.group('hash')
         self.commit['hash'] = self.m.group('hash')
 
         for self.line in self.outputlines[1:]:
@@ -60,8 +59,6 @@ class GNOMEGitCommits:
             if self.m:
                 self.commit['changes'] = self.changes
                 self.allCommits[self.commitID] = self.commit
-                print self.commit
-                print
                 self.commit = {}
                 self.changes = {}
                 self.gotDescription = False
@@ -106,10 +103,13 @@ class GNOMEGitCommits:
 
         self.commit['changes'] = self.changes
         self.allCommits[self.commitID] = self.commit
-        print self.commit
-        print
+
+        return self.allCommits
+
+    def getGitCommits(self):
+      return self.allCommits
 
 if __name__ == '__main__':
       a = GNOMEGitCommits()
-      a.parse('/tmp/GIT/zenity')
+      print a.parse('/tmp/GIT/zenity')
 

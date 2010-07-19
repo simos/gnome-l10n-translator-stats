@@ -36,6 +36,7 @@ import filecmp                  # for filecmp.cmp()
 import hashlib                  # for md5
 
 import GNOMEI18nTarget
+import GNOMEGitCommits
 
 try:
     from lxml import etree      # etree.XMLParser(), etree.XML()
