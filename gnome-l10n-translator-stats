@@ -38,6 +38,10 @@ import dateutil.parser          # for dateutil.parser.parse()
 
 import GNOMEI18nTarget
 import GNOMEGitCommits
+import POCount
+import PODiff
+import SVNContributorsEL
+import AuthorMergeEL
 
 try:
     from lxml import etree      # etree.XMLParser(), etree.XML()
@@ -92,6 +96,11 @@ class GNOMEL10nTranslatorStats:
     # Value is number of translated words
     contributors = {}
 
+    # These are the descriptions (comments) of the commits. During the CVS/SVN era,
+    # the translator names where added there in free-form.
+    # We use the output of this to help us resolve the problem.
+    descriptions = []
+
     dir_vcs = ''
     file_START = 'START'
 
@@ -116,8 +125,20 @@ class GNOMEL10nTranslatorStats:
         # Object that stores git repository data
         self.GitCommits = GNOMEGitCommits.GNOMEGitCommits()
 
+        # POCount object, executes pocount on PO file
+        self.POCounts = POCount.POCount()
+
+        # PODiff object, executes podiff on two PO files
+        self.PODiffs = PODiff.PODiff()
+
         # getkey object for kbhit()
         self.getkey = GetKey.GetKey()
+
+        # SVNContributors object
+        self.SVNContributors = SVNContributorsEL.SVNContributorsEL()
+
+        # AuthorMerge object
+        self.AuthorMerge = AuthorMergeEL.AuthorMergeEL()
 
         # If no args, show basic help.
         if not argv[1:]:
@@ -304,7 +325,7 @@ class GNOMEL10nTranslatorStats:
                         print 'Analysing for', pofile, pofilelocal
                         self.analyse_contributions(repositorypath, pofile, pofilelocal, branch, GitCommitsData)
                         print
-
+        self.prettyPrintContributors()
 
     def analyse_contributions(self, repositorypath, pofile, pofilelocal, branch, GitCommitsData):
         if not os.path.exists(pofile):
@@ -319,9 +340,6 @@ class GNOMEL10nTranslatorStats:
         args_remove_ncommits = ['/usr/bin/git', 'reset', '--quiet', '--hard', 'HEAD~n']
         args_reset_hard      = ['/usr/bin/git', 'reset', '--quiet', '--hard']
 
-        args_pocount         = ['/usr/bin/pocount', 'file1']
-        args_podiff          = ['/usr/local/bin/podiff', 'file1', 'file2']
-
         subprocess.call(args_checkout_master, cwd = repositorypath)
         subprocess.call(args_checkout_branch, cwd = repositorypath)
         subprocess.call(args_checkout_stats, cwd = repositorypath)
@@ -330,11 +348,11 @@ class GNOMEL10nTranslatorStats:
         shutil.copyfile(pofile, newerpofile)
 
         commitdive = 0
+        wordsTranslated = {}
 
         for count in range(len(GitCommitsData)):
           commit = GitCommitsData[count]
           committime = time.mktime(dateutil.parser.parse(commit['date']).timetuple())
-          #print ">>>", commit['author'], commit['hash']
 
           if committime < self.startdate or committime > self.enddate:
             continue
@@ -352,21 +370,16 @@ class GNOMEL10nTranslatorStats:
                 print "Reached genesis of file. File was first committed at depth", count
                 print "By", commit['author'], "at hash", commit['hash']
 
-                args_pocount[1] = newerpofile
-                subprocess.call(args_pocount)
+                self.addContribution(commit['author'], commit['description'], self.POCounts.parse(newerpofile), 'translated')
                 break               
 
-              if self.file_md5(newerpofile) != self.file_md5(pofile):
-                print "DIFFERENT files", newerpofile, pofile
-              else:
-                print "SAME files", newerpofile, pofile
-              args_pocount[1] = newerpofile
-              args_podiff[1] = newerpofile
-              subprocess.call(args_pocount)
-              args_pocount[1] = pofile
-              args_podiff[2] = pofile
-              subprocess.call(args_pocount)
-              subprocess.call(args_podiff)
+              if self.file_md5(newerpofile) == self.file_md5(pofile):
+                print "WARNING: ***SAME*** files", newerpofile, pofile
+
+              wordsTranslated['translated'] = int(self.POCounts.parse(newerpofile)['translated']) - \
+                                                int(self.POCounts.parse(pofile)['translated'])
+              self.addContribution(commit['author'], commit['description'], wordsTranslated, 'translated')
+              self.addContribution(commit['author'], commit['description'], self.PODiffs.parse(pofile, newerpofile), 'changed')
 
               shutil.copyfile(pofile, newerpofile)
 
@@ -374,6 +387,36 @@ class GNOMEL10nTranslatorStats:
         subprocess.call(args_checkout_master, cwd = repositorypath)
         subprocess.call(args_delete_stats, cwd = repositorypath)
         subprocess.call(args_delete_branch, cwd = repositorypath)
+
+    def addContribution(self, author, description, contribution, contributiontype):
+        realAuthor = author
+        for nick in self.SVNContributors.mapping:
+          if nick in description:
+            realAuthor = self.SVNContributors.mapping[nick]
+            break
+
+        # If real author is not in the comment field, fix the committer/author name.
+        if realAuthor == author:
+            for nick in self.AuthorMerge.mapping:
+                if nick in author:
+                    realAuthor = self.AuthorMerge.mapping[nick]
+                    break
+
+        try:
+            if self.contributors[realAuthor]:
+              pass
+        except KeyError, err:
+          self.contributors[realAuthor] = { 'translated': 0, 'changed': 0 }
+
+        print "ADDCONTRIB: Added for", realAuthor, 'committer:', author, contribution
+        # There are cases that PO files get shorter; do not penalise translator.
+        # FIXME: Resolve with intltool-update-ing the previous PO file.
+        if contribution[contributiontype] > 0:
+            self.contributors[realAuthor][contributiontype] += int(contribution[contributiontype])
+
+        # If we did not fix the SVNContributor name, then add it in the list in case it has a name.
+        if realAuthor == author:
+            self.descriptions.append(description)
 
     def get_po_file_data(self, pofile):
         if not self.gnome_release_data:
@@ -614,6 +657,18 @@ class GNOMEL10nTranslatorStats:
         finally:
            termios.tcsetattr(fd, termios.TCSAFLUSH, oldterm)
            fcntl.fcntl(fd, fcntl.F_SETFL, oldflags)
+
+    def prettyPrintContributors(self):
+      print
+      for contributor in self.contributors:
+        print "%(con)50s %(trans)10d %(changed)10d" % { 'con': contributor, 
+            'trans': self.contributors[contributor]['translated'], 
+            'changed': self.contributors[contributor]['changed']}
+
+      print
+      print "Descriptions:"
+      for desc in self.descriptions:
+        print desc
 
 if __name__ == '__main__':
     start = GNOMEL10nTranslatorStats(sys.argv)
