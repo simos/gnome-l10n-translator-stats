@@ -28,12 +28,12 @@ except ImportError as err:
     print('Please install the package python-lxml and try again.\nExiting...')
     sys.exit(-10)
 
-PROGNAME='gnome-i18n-manage-vcs'
+PROGNAME='gnome-l10n-translator-stats'
 
-PACKAGE_NAME    = 'GNOME I18n Manage VCS'
-PACKAGE_VERSION = '0.9'
-PACKAGE_AUTHORS = ['Simos Xenitellis <simos@gnome.org>', 'Og Maciel <ogmaciel@gnome.org>']
-PACKAGE_COPYRIGHT = 'Copyright 2009 Simos Xenitellis'
+PACKAGE_NAME    = 'GNOME L10n Translator Stats'
+PACKAGE_VERSION = '0.1'
+PACKAGE_AUTHORS = ['Simos Xenitellis <simos@gnome.org>']
+PACKAGE_COPYRIGHT = 'Copyright 2010 Simos Xenitellis'
 
 class ModuleIterator:
     def __init__(self, language, release, category, module, transtype):
