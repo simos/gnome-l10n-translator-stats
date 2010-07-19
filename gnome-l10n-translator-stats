@@ -34,6 +34,7 @@ from datetime import datetime   # datetime()
 import random                   # for random.random()
 import filecmp                  # for filecmp.cmp()
 import hashlib                  # for md5
+import dateutil.parser          # for dateutil.parser.parse()
 
 import GNOMEI18nTarget
 import GNOMEGitCommits
@@ -52,6 +53,20 @@ PACKAGE_NAME    = 'GNOME L10n Translator Stats'
 PACKAGE_VERSION = '0.1'
 PACKAGE_AUTHORS = ['Simos Xenitellis <simos@gnome.org>']
 PACKAGE_COPYRIGHT = 'Copyright 2010 Simos Xenitellis'
+
+
+
+import termios, fcntl, sys, os
+fd = sys.stdin.fileno()
+
+oldterm = termios.tcgetattr(fd)
+newattr = termios.tcgetattr(fd)
+newattr[3] = newattr[3] & ~termios.ICANON & ~termios.ECHO
+termios.tcsetattr(fd, termios.TCSANOW, newattr)
+
+oldflags = fcntl.fcntl(fd, fcntl.F_GETFL)
+fcntl.fcntl(fd, fcntl.F_SETFL, oldflags | os.O_NONBLOCK)
+
 
 class GNOMEL10nTranslatorStats:
     # Required configuration options
@@ -97,6 +112,9 @@ class GNOMEL10nTranslatorStats:
     def __init__(self, argv):
         # Initialise the text color object
         self.tc = TextColorPrint.TextColorPrint()
+
+        # Object that stores git repository data
+        self.GitCommits = GNOMEGitCommits.GNOMEGitCommits()
 
         # getkey object for kbhit()
         self.getkey = GetKey.GetKey()
@@ -245,6 +263,7 @@ class GNOMEL10nTranslatorStats:
             if self.opt_verbose:
                 print '    Category: %(cat)s' % { 'cat': self.highlighttitle(cat) }
             for mod in self.gnome_release_data['categories'][cat]:
+                caching_repository_data = False
                 if self.module != '' and mod != self.module:
                     continue
                 if self.opt_verbose:
@@ -267,19 +286,27 @@ class GNOMEL10nTranslatorStats:
                     repositorypath = self.dir_vcs + repository
                     if resourceid == 'domain':
                         pofile = self.dir_vcs + repository + '/' + subdir + '/' + self.language + '.po'
+                        pofilelocal = subdir + '/' + self.language + '.po'
                     elif resourceid == 'document':
                         pofile = self.dir_vcs + repository + '/' + subdir + '/' + self.language + '/' + self.language + '.po'
+                        pofilelocal = subdir + '/' + self.language + '/' + self.language + '.po'
                     else:
                       print "Invalid resource id", resourceid
                       sys.exit(-20)
                     
                     if os.path.exists(repositorypath):
-                        print 'Analysing for', pofile
-                        self.analyse_contributions(repositorypath, pofile, branch)
+                        if caching_repository_data:
+                          pass
+                        else:
+                            GitCommitsData = self.GitCommits.parse(repositorypath)
+                            caching_repository_data = True
+
+                        print 'Analysing for', pofile, pofilelocal
+                        self.analyse_contributions(repositorypath, pofile, pofilelocal, branch, GitCommitsData)
                         print
 
 
-    def analyse_contributions(self, repositorypath, pofile, branch):
+    def analyse_contributions(self, repositorypath, pofile, pofilelocal, branch, GitCommitsData):
         if not os.path.exists(pofile):
             return
 
@@ -289,76 +316,61 @@ class GNOMEL10nTranslatorStats:
         args_delete_stats    = ['/usr/bin/git', 'branch', '-D', 'l10n-stats']
         args_delete_branch   = ['/usr/bin/git', 'branch', '-D', branch]
         args_remove_commit   = ['/usr/bin/git', 'reset', '--quiet', '--hard', 'HEAD^1']
-        args_reset_hard   = ['/usr/bin/git', 'reset', '--quiet', '--hard']
+        args_remove_ncommits = ['/usr/bin/git', 'reset', '--quiet', '--hard', 'HEAD~n']
+        args_reset_hard      = ['/usr/bin/git', 'reset', '--quiet', '--hard']
+
+        args_pocount         = ['/usr/bin/pocount', 'file1']
+        args_podiff          = ['/usr/local/bin/podiff', 'file1', 'file2']
 
         subprocess.call(args_checkout_master, cwd = repositorypath)
         subprocess.call(args_checkout_branch, cwd = repositorypath)
         subprocess.call(args_checkout_stats, cwd = repositorypath)
        
-        repo = git.Repo(repositorypath)
-        commits = repo.iter_commits('l10n-stats', max_count=10000)
-        previouspofile = '/tmp/gnome-l10n-translator-stats-latest-' + branch + str(random.random())
-        shutil.copyfile(pofile, previouspofile)
+        newerpofile = '/tmp/gnome-l10n-translator-stats-latest-' + branch + str(random.random()) + '.po'
+        shutil.copyfile(pofile, newerpofile)
 
-        firsttime = True
-        emptytranslation = False
+        commitdive = 0
 
-        for i in commits:
-            if firsttime:
-              firsttime = False
+        for count in range(len(GitCommitsData)):
+          commit = GitCommitsData[count]
+          committime = time.mktime(dateutil.parser.parse(commit['date']).timetuple())
+          #print ">>>", commit['author'], commit['hash']
 
-              previous_author = i.author
-              previous_authored_date = i.authored_date
-              previous_committer = i.committer
-              previous_committed_date = i.committed_date
-              previous_message = i.message
-              previous_hash = self.file_md5(pofile)
-              previous_size = os.path.getsize(pofile)
+          if committime < self.startdate or committime > self.enddate:
+            continue
 
-            if emptytranslation:
-              break
+          for changes in commit['changes']:
+            if pofilelocal in changes:
+              print "On commit depth", count, "translator", commit['author'], commit['description']
+              print "Removing", str(count - commitdive+1), "commits (dive is", str(commitdive) + ')'
+              args_remove_ncommits[4] = 'HEAD~' + str(count - commitdive+1)
+              commitdive = count - commitdive
+              print "Commit dive is now", str(commitdive)
+              subprocess.call(args_remove_ncommits, cwd = repositorypath)
 
-            # If commit is within our range,
-            if i.authored_date >= self.startdate and i.authored_date <= self.enddate:
-                try:
-                    # If translation file exists,
-                    if os.path.exists(pofile):
-                        # If current file has changed,
-                        if previous_hash != self.file_md5(pofile):
-                            #print "[1]", self.highlightitem(previous_author.name), self.highlight(previous_message), previous_hash, self.file_md5(pofile)
-                            #print "[1]", self.highlightitem(i.author.name), self.highlight(i.message), previous_hash, self.file_md5(pofile)
-                            print "[1]", self.highlightitem(x_author)
+              if not os.path.exists(pofile):
+                print "Reached genesis of file. File was first committed at depth", count
+                print "By", commit['author'], "at hash", commit['hash']
 
-                        # Keep copy of current file
-                        shutil.copyfile(pofile, previouspofile)
+                args_pocount[1] = newerpofile
+                subprocess.call(args_pocount)
+                break               
 
-                        # Calculate the hash of the current file
-                        previous_hash = self.file_md5(pofile)
-                        previous_size = os.path.getsize(pofile)
+              if self.file_md5(newerpofile) != self.file_md5(pofile):
+                print "DIFFERENT files", newerpofile, pofile
+              else:
+                print "SAME files", newerpofile, pofile
+              args_pocount[1] = newerpofile
+              args_podiff[1] = newerpofile
+              subprocess.call(args_pocount)
+              args_pocount[1] = pofile
+              args_podiff[2] = pofile
+              subprocess.call(args_pocount)
+              subprocess.call(args_podiff)
 
-                        x_author = previous_author.name
-                        previous_author = i.author
-                        previous_authored_date = i.authored_date
-                        previous_committer = i.committer
-                        previous_committed_date = i.committed_date
-                        previous_message = i.message
+              shutil.copyfile(pofile, newerpofile)
 
-                        aa = previous_author.name[0:6]
-                        if aa == "Simos" or aa == "Kostas" or aa == "Nikos " or aa == "Sterio":
-                            print "XXX", previous_author.name
-
-                        # Pop up the last commit
-                        #repo.index.reset(commit='HEAD^1')
-                        subprocess.call(args_remove_commit, cwd = repositorypath)
-                    else:
-                      emptytranslation = True
-                      print "FINAL:", self.highlightitem(previous_author.name), self.highlight(previous_message)
-                      print "[FINAL]", self.highlightitem(x_author)
-                      next
-                except OSError, err:
-                  pass
-
-        os.unlink(previouspofile)
+        os.unlink(newerpofile)
         subprocess.call(args_checkout_master, cwd = repositorypath)
         subprocess.call(args_delete_stats, cwd = repositorypath)
         subprocess.call(args_delete_branch, cwd = repositorypath)
@@ -593,6 +605,15 @@ class GNOMEL10nTranslatorStats:
            break
         md5.update(data)
       return md5.hexdigest()
+
+    def getch(self):
+        try:
+            print "Press any key to continue..."
+            c = sys.stdin.read(1)
+        except IOError: pass
+        finally:
+           termios.tcsetattr(fd, termios.TCSAFLUSH, oldterm)
+           fcntl.fcntl(fd, fcntl.F_SETFL, oldflags)
 
 if __name__ == '__main__':
     start = GNOMEL10nTranslatorStats(sys.argv)
