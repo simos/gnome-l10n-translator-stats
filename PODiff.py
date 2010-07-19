@@ -45,9 +45,13 @@ class PODiff:
         self.output = self.process.communicate()[0]
         self.outputlines = re.split("\n", self.output)
 
-        self.line = self.outputlines[1]
-        self.m = self.patChanged.match(self.line)
-        self.stats['changed'] = self.m.group('changed')
+        try:
+            self.line = self.outputlines[1]
+            self.m = self.patChanged.match(self.line)
+            self.stats['changed'] = self.m.group('changed')
+        except IndexError, err:
+            print "PODIFF bailed on us; it cannot produce a podiff. Ignoring these files"
+            self.stats['changed'] = 0
 
         return self.stats
 
